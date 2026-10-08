@@ -1,0 +1,10 @@
+const LIMIT=64*1024*1024, AGE=7*86400000;
+export class Diary {
+ constructor(){this.db=null;this.memory=[];this.queue=Promise.resolve();this.persistent=false;}
+ async open(){try{this.db=await new Promise((resolve,reject)=>{const r=indexedDB.open('spare-phone',1);r.onupgradeneeded=()=>r.result.createObjectStore('records',{keyPath:'id'});r.onsuccess=()=>resolve(r.result);r.onerror=()=>reject(r.error);});this.persistent=true;await this.prune();}catch{this.db?.close();this.db=null;this.persistent=false;}return this;}
+ async read(){if(!this.db)return [...this.memory].sort((a,b)=>b.time-a.time);return new Promise((resolve,reject)=>{const t=this.db.transaction('records','readonly');const r=t.objectStore('records').getAll();r.onsuccess=()=>resolve(r.result.sort((a,b)=>b.time-a.time));r.onerror=()=>reject(r.error);});}
+ write(record){const op=async()=>{const row={id:crypto.randomUUID?.()||`${Date.now()}-${Math.random()}`,time:Date.now(),...record};if((row.blob?.size||0)>LIMIT)throw new DOMException('This file exceeds the 64 MB media limit.','QuotaExceededError');if(this.db){await new Promise((resolve,reject)=>{const t=this.db.transaction('records','readwrite');t.objectStore('records').put(row);t.oncomplete=resolve;t.onerror=()=>reject(t.error);t.onabort=()=>reject(t.error);});}else this.memory.unshift(row);await this.prune();return row;};const task=this.queue.then(op);this.queue=task.catch(()=>{});return task;}
+ async remove(ids){if(!this.db){this.memory=this.memory.filter(r=>!ids.includes(r.id));return;}await new Promise((resolve,reject)=>{const t=this.db.transaction('records','readwrite');ids.forEach(id=>t.objectStore('records').delete(id));t.oncomplete=resolve;t.onerror=()=>reject(t.error);});}
+ async prune(){const all=await this.read();let size=0,count=0;const remove=[];for(const row of all){size+=row.blob?.size||0;count++;if(row.time<Date.now()-AGE||count>500||size>LIMIT)remove.push(row.id);}if(remove.length)await this.remove(remove);}
+ async clear(){await this.queue;await this.remove((await this.read()).map(r=>r.id));}
+}
